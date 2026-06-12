@@ -63,6 +63,22 @@ struct HistoryStoreTests {
         #expect(try store.latest()?.content == "version 3")
     }
 
+    @Test func previousContent_returnsTheImmediatelyOlderVersion() throws {
+        let store = try makeStore()
+        try store.appendSnapshot(content: "v1", createdAt: Date())
+        let v2 = try #require(try store.appendSnapshot(content: "v2", createdAt: Date()))
+        let v3 = try #require(try store.appendSnapshot(content: "v3", createdAt: Date()))
+
+        #expect(try store.previousContent(before: v3.id) == "v2")
+        #expect(try store.previousContent(before: v2.id) == "v1")
+    }
+
+    @Test func previousContent_isNilForTheOldestVersion() throws {
+        let store = try makeStore()
+        let v1 = try #require(try store.appendSnapshot(content: "only", createdAt: Date()))
+        #expect(try store.previousContent(before: v1.id) == nil)
+    }
+
     @Test func metas_areNewestFirstWithCorrectByteCount() throws {
         let store = try makeStore()
         try store.appendSnapshot(content: "a", createdAt: Date())

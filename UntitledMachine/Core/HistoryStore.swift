@@ -150,6 +150,15 @@ nonisolated final class HistoryStore {
         )
     }
 
+    /// Content of the version immediately older than `id`, for diffing against it.
+    func previousContent(before id: Int64) throws -> String? {
+        let stmt = try prepare("SELECT content FROM snapshots WHERE rowid < ? ORDER BY rowid DESC LIMIT 1;")
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, id)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return String(cString: sqlite3_column_text(stmt, 0))
+    }
+
     func count() throws -> Int {
         let stmt = try prepare("SELECT count(*) FROM snapshots;")
         defer { sqlite3_finalize(stmt) }
