@@ -97,11 +97,15 @@ nonisolated final class HistoryCoordinator: @unchecked Sendable {
         }
     }
 
-    // Returns nil when the file doesn't exist (deleted/moved/renamed). An
-    // existing but empty file returns "" — that's a real state (the user cleared
-    // it) and must be recorded, which is exactly what this app protects.
+    // Returns nil when there's nothing valid to record:
+    //  - the file doesn't exist (deleted/moved/renamed), or
+    //  - it can't be read as UTF-8 (non-UTF-8 file, or a transient mid-write).
+    // We deliberately do NOT fall back to "" in those cases, to avoid recording
+    // a bogus empty version. An existing, readable, empty file returns "" — that
+    // is a real state (the user cleared it) and must be recorded. This app
+    // targets UTF-8 text files.
     private func readContent() -> String? {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
-        return (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
+        return try? String(contentsOf: fileURL, encoding: .utf8)
     }
 }
