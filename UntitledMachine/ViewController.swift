@@ -16,6 +16,7 @@ final class ViewController: NSViewController {
     private var coordinator: HistoryCoordinator?
     private var metas: [SnapshotMeta] = []
     private var query = ""
+    private var searchTask: Task<Void, Never>?
 
     private let pathLabel = NSTextField(labelWithString: "No file selected")
     private let searchField = NSSearchField()
@@ -150,7 +151,7 @@ final class ViewController: NSViewController {
 
     @objc private func filterChanged() {
         query = searchField.stringValue
-        reloadVersions()
+        refresh(debounce: true)
     }
 
     @objc private func restoreSelected() {
@@ -171,32 +172,50 @@ final class ViewController: NSViewController {
             let store = try HistoryStore(url: databaseURL(forWatchedFile: fileURL))
             let coordinator = HistoryCoordinator(fileURL: fileURL, store: store)
             coordinator.onSnapshot = { [weak self] _ in
-                // Fired on the watcher's background queue; hop to the main actor.
-                Task { @MainActor in self?.reloadVersions() }
+                // Fired on a background queue; hop to the main actor.
+                Task { @MainActor in self?.refresh(debounce: false) }
             }
             coordinator.start()
             self.store = store
             self.coordinator = coordinator
             pathLabel.stringValue = fileURL.path
-            reloadVersions()
+            refresh(debounce: false)
         } catch {
             presentError("Could not open history", error)
         }
     }
 
-    private func reloadVersions() {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            metas = (try? store?.snapshotMetas()) ?? []
-        } else {
-            metas = (try? store?.search(trimmed)) ?? []
+    // Reloads the version list. The query runs off the main thread so a heavy
+    // search (e.g. a short query that falls back to a full LIKE scan over a large
+    // history) never freezes the UI. `debounce` waits out rapid typing first.
+    private func refresh(debounce: Bool) {
+        guard let store else {
+            metas = []
+            tableView.reloadData()
+            updateDetail()
+            return
         }
-        tableView.reloadData()
-        // Select the newest version so the detail pane shows something right away.
-        if tableView.selectedRow < 0, !metas.isEmpty {
-            tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        searchTask?.cancel()
+        searchTask = Task { @MainActor [weak self] in
+            if debounce {
+                try? await Task.sleep(for: .milliseconds(200))
+                if Task.isCancelled { return }
+            }
+            let result = await Task.detached {
+                q.isEmpty ? ((try? store.snapshotMetas()) ?? [])
+                          : ((try? store.search(q)) ?? [])
+            }.value
+            if Task.isCancelled { return }
+            guard let self else { return }
+            self.metas = result
+            self.tableView.reloadData()
+            // Select the newest version so the detail pane shows something right away.
+            if self.tableView.selectedRow < 0, !self.metas.isEmpty {
+                self.tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+            }
+            self.updateDetail()
         }
-        updateDetail()
     }
 
     // MARK: - Detail (diff / full text)

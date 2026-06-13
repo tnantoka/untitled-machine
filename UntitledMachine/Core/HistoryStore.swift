@@ -19,10 +19,11 @@ import SQLite3
 // The magic value SQLite expects to mean "copy the bound text" (SQLITE_TRANSIENT).
 private nonisolated(unsafe) let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-// Off the main actor so it can run on the capture queue and test threads.
-// Opened with SQLITE_OPEN_FULLMUTEX, so the C layer serializes access; the only
-// stored state (`db`) is immutable after init. Effectively thread-safe.
-nonisolated final class HistoryStore {
+// Off the main actor so it can run on the capture queue, a background search
+// task, and test threads. Opened with SQLITE_OPEN_FULLMUTEX, so the C layer
+// serializes access; the only stored state (`db`) is immutable after init.
+// Hence @unchecked Sendable: thread-safe by construction, not by the compiler.
+nonisolated final class HistoryStore: @unchecked Sendable {
 
     enum StoreError: Error, CustomStringConvertible {
         case open(String)
