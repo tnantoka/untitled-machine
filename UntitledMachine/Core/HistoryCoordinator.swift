@@ -84,8 +84,10 @@ nonisolated final class HistoryCoordinator: @unchecked Sendable {
     }
 
     private func captureNow() {
+        // A missing file is not an edit: skip it rather than record a bogus
+        // empty version. (Clearing an existing file IS recorded — see readContent.)
+        guard let content = readContent() else { return }
         do {
-            let content = try readContent()
             if let snapshot = try store.appendSnapshot(content: content, createdAt: Date()) {
                 log.info("saved snapshot #\(snapshot.id) (\(snapshot.byteCount) bytes)")
                 onSnapshot?(snapshot)
@@ -95,9 +97,11 @@ nonisolated final class HistoryCoordinator: @unchecked Sendable {
         }
     }
 
-    // Treats a missing or unreadable file as empty (not yet created, mid-write).
-    private func readContent() throws -> String {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return "" }
+    // Returns nil when the file doesn't exist (deleted/moved/renamed). An
+    // existing but empty file returns "" — that's a real state (the user cleared
+    // it) and must be recorded, which is exactly what this app protects.
+    private func readContent() -> String? {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
         return (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
     }
 }

@@ -49,6 +49,42 @@ struct HistoryCoordinatorTests {
         #expect(try store.count() == 1)
     }
 
+    /// Deleting the watched file must NOT record an empty version.
+    @Test func deletingFileDoesNotRecordEmptyVersion() async throws {
+        let dir = try makeTempDir()
+        let fileURL = dir.appendingPathComponent("Untitled.txt")
+        try "content".write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let store = try HistoryStore(url: dir.appendingPathComponent("history.db"))
+        let coordinator = HistoryCoordinator(fileURL: fileURL, store: store, debounceInterval: 0.2)
+        defer { coordinator.stop() }
+
+        coordinator.start()
+        #expect(try store.count() == 1)
+
+        try FileManager.default.removeItem(at: fileURL)
+        try await Task.sleep(for: .seconds(1)) // past debounce + FSEvents latency
+        #expect(try store.count() == 1)
+    }
+
+    /// Clearing an existing file to empty IS a real edit and must be recorded.
+    @Test func clearingFileToEmptyIsRecorded() async throws {
+        let dir = try makeTempDir()
+        let fileURL = dir.appendingPathComponent("Untitled.txt")
+        try "content".write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let store = try HistoryStore(url: dir.appendingPathComponent("history.db"))
+        let coordinator = HistoryCoordinator(fileURL: fileURL, store: store, debounceInterval: 0.2)
+        defer { coordinator.stop() }
+
+        coordinator.start()
+        #expect(try store.count() == 1)
+
+        try "".write(to: fileURL, atomically: true, encoding: .utf8)
+        try await waitUntil { try store.count() == 2 }
+        #expect(try store.latest()?.content == "")
+    }
+
     /// Restore writes the content back to the file and records a new version.
     @Test func restoreWritesContentBackToFile() async throws {
         let dir = try makeTempDir()
