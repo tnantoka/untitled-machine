@@ -2,24 +2,21 @@
 //  ViewController.swift
 //  UntitledMachine
 //
+//  A view onto WatchSession.shared. It owns no watching state; it queries the
+//  session's store and refreshes when notified of new snapshots.
+//
 
 import Cocoa
-import CryptoKit
-import os
 
 final class ViewController: NSViewController {
 
-    private static let watchedFilePathKey = "watchedFilePath"
-    private let log = Logger(subsystem: "com.tnantoka.UntitledMachine", category: "ui")
-
-    private var store: HistoryStore?
-    private var coordinator: HistoryCoordinator?
     private var metas: [SnapshotMeta] = []
     private var query = ""
     private var searchTask: Task<Void, Never>?
 
     private let pathLabel = NSTextField(labelWithString: "No file selected")
     private let searchField = NSSearchField()
+    private let launchAtLoginCheckbox = NSButton(checkboxWithTitle: "Launch at login", target: nil, action: nil)
     private let tableView = NSTableView()
     private let textScroll = NSTextView.scrollableTextView()
     private let restoreButton = NSButton(title: "Restore This Version", target: nil, action: nil)
@@ -34,6 +31,7 @@ final class ViewController: NSViewController {
     private static let monoFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
 
     private var textView: NSTextView? { textScroll.documentView as? NSTextView }
+    private var store: HistoryStore? { WatchSession.shared.store }
 
     // MARK: - Layout
 
@@ -49,7 +47,9 @@ final class ViewController: NSViewController {
         searchField.placeholderString = "Search all history"
         searchField.setContentHuggingPriority(.required, for: .horizontal)
         searchField.widthAnchor.constraint(equalToConstant: 240).isActive = true
-        let topBar = NSStackView(views: [chooseButton, pathLabel, searchField])
+        launchAtLoginCheckbox.target = self
+        launchAtLoginCheckbox.action = #selector(toggleLaunchAtLogin)
+        let topBar = NSStackView(views: [chooseButton, pathLabel, searchField, launchAtLoginCheckbox])
         topBar.orientation = .horizontal
         topBar.spacing = 8
         topBar.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
@@ -80,7 +80,6 @@ final class ViewController: NSViewController {
         split.translatesAutoresizingMaskIntoConstraints = false
         split.addArrangedSubview(listScroll)
         split.addArrangedSubview(textScroll)
-        // Keep the list a fixed-ish width; let the detail pane absorb resizing.
         split.setHoldingPriority(.defaultHigh, forSubviewAt: 0)
 
         restoreButton.target = self
@@ -126,10 +125,26 @@ final class ViewController: NSViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        // Resume watching the file chosen in a previous launch.
-        if let path = UserDefaults.standard.string(forKey: Self.watchedFilePathKey), !path.isEmpty {
-            startWatching(URL(fileURLWithPath: path))
-        }
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(snapshotDidArrive), name: .snapshotAdded, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(watchTargetDidChange), name: .watchTargetChanged, object: nil)
+    }
+
+    override func viewWillAppear() {
+        super.viewWillAppear()
+        reflectTarget()
+        syncLoginCheckbox()
+        refresh(debounce: false)
+    }
+
+    // MARK: - Notifications
+
+    @objc private func snapshotDidArrive() { refresh(debounce: false) }
+
+    @objc private func watchTargetDidChange() {
+        reflectTarget()
+        refresh(debounce: false)
     }
 
     // MARK: - Actions
@@ -141,8 +156,11 @@ final class ViewController: NSViewController {
         panel.allowsMultipleSelection = false
         panel.message = "Choose the text file to keep history for."
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        UserDefaults.standard.set(url.path, forKey: Self.watchedFilePathKey)
-        startWatching(url)
+        do {
+            try WatchSession.shared.watch(url)
+        } catch {
+            presentError("Could not open history", error)
+        }
     }
 
     @objc private func modeChanged() {
@@ -154,35 +172,33 @@ final class ViewController: NSViewController {
         refresh(debounce: true)
     }
 
+    @objc private func toggleLaunchAtLogin() {
+        do {
+            try LoginItem.setEnabled(launchAtLoginCheckbox.state == .on)
+        } catch {
+            presentError("Could not change the login item", error)
+        }
+        syncLoginCheckbox() // reflect the real status, even if the change failed
+    }
+
     @objc private func restoreSelected() {
         let row = tableView.selectedRow
-        guard row >= 0, row < metas.count, let coordinator else { return }
+        guard row >= 0, row < metas.count else { return }
         do {
-            try coordinator.restore(to: metas[row].id)
+            try WatchSession.shared.restore(to: metas[row].id)
         } catch {
             presentError("Restore failed", error)
         }
     }
 
-    // MARK: - Watching
+    // MARK: - State reflection
 
-    private func startWatching(_ fileURL: URL) {
-        coordinator?.stop()
-        do {
-            let store = try HistoryStore(url: databaseURL(forWatchedFile: fileURL))
-            let coordinator = HistoryCoordinator(fileURL: fileURL, store: store)
-            coordinator.onSnapshot = { [weak self] _ in
-                // Fired on a background queue; hop to the main actor.
-                Task { @MainActor in self?.refresh(debounce: false) }
-            }
-            coordinator.start()
-            self.store = store
-            self.coordinator = coordinator
-            pathLabel.stringValue = fileURL.path
-            refresh(debounce: false)
-        } catch {
-            presentError("Could not open history", error)
-        }
+    private func reflectTarget() {
+        pathLabel.stringValue = WatchSession.shared.fileURL?.path ?? "No file selected"
+    }
+
+    private func syncLoginCheckbox() {
+        launchAtLoginCheckbox.state = LoginItem.isEnabled ? .on : .off
     }
 
     // Reloads the version list. The query runs off the main thread so a heavy
@@ -210,7 +226,6 @@ final class ViewController: NSViewController {
             guard let self else { return }
             self.metas = result
             self.tableView.reloadData()
-            // Select the newest version so the detail pane shows something right away.
             if self.tableView.selectedRow < 0, !self.metas.isEmpty {
                 self.tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
             }
@@ -232,8 +247,6 @@ final class ViewController: NSViewController {
         restoreButton.isEnabled = true
 
         let showDiff = modeControl.selectedSegment == 0
-        // Ask the store for the true predecessor by id, so diff stays correct
-        // even when the list is filtered by a search.
         let olderContent = (try? store.previousContent(before: selected.id)) ?? nil
 
         if showDiff, let olderContent {
@@ -280,19 +293,7 @@ final class ViewController: NSViewController {
         return result
     }
 
-    private func databaseURL(forWatchedFile fileURL: URL) throws -> URL {
-        let dir = try FileManager.default.url(
-            for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
-        ).appendingPathComponent("UntitledMachine", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        // One DB per watched file, so switching files keeps histories separate.
-        let digest = SHA256.hash(data: Data(fileURL.standardizedFileURL.path.utf8))
-        let key = digest.map { String(format: "%02x", $0) }.joined().prefix(16)
-        return dir.appendingPathComponent("history-\(key).db")
-    }
-
     private func presentError(_ title: String, _ error: Error) {
-        log.error("\(title, privacy: .public): \(String(describing: error), privacy: .public)")
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = String(describing: error)
