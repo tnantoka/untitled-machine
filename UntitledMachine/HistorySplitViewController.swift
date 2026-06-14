@@ -129,12 +129,40 @@ final class HistorySplitViewController: NSSplitViewController, NSTableViewDataSo
 
     @objc private func restoreSelected() {
         let row = tableView.selectedRow
-        guard row >= 0, row < metas.count else { return }
+        guard row >= 0, row < metas.count, let store else { return }
+        let meta = metas[row]
+        guard let selected = try? store.snapshot(id: meta.id) else { return }
+        let current = (try? store.latest())?.content ?? ""
+
+        let alert = NSAlert()
+        alert.messageText = "Restore this version?"
+        alert.informativeText = "The current file will be overwritten with the version from "
+            + "\(dateFormatter.string(from: meta.createdAt)). The current state stays in history, so you can revert."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Restore")
+        alert.addButton(withTitle: "Cancel")
+        // Preview what restoring does to the current file (current → selected).
+        alert.accessoryView = Self.makeDiffPreview(from: current, to: selected.content)
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
-            try WatchSession.shared.restore(to: metas[row].id)
+            try WatchSession.shared.restore(to: meta.id)
         } catch {
             presentError("Restore failed", error)
         }
+    }
+
+    private static func makeDiffPreview(from old: String, to new: String) -> NSView {
+        let scroll = NSTextView.scrollableTextView()
+        scroll.frame = NSRect(x: 0, y: 0, width: 460, height: 240)
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        if let textView = scroll.documentView as? NSTextView {
+            textView.isEditable = false
+            textView.textContainerInset = NSSize(width: 6, height: 6)
+            textView.textStorage?.setAttributedString(attributedDiff(from: old, to: new))
+        }
+        return scroll
     }
 
     // MARK: - Data
@@ -179,13 +207,17 @@ final class HistorySplitViewController: NSSplitViewController, NSTableViewDataSo
             restoreButton.isEnabled = false
             return
         }
-        restoreButton.isEnabled = true
+        // Restore is a no-op when the selected version already equals the current
+        // state (the newest snapshot), so disable it then.
+        let current = (try? store.latest())?.content
+        restoreButton.isEnabled = current != nil && selected.content != current
 
-        let showDiff = modeControl.selectedSegment == 0
-        let olderContent = (try? store.previousContent(before: selected.id)) ?? nil
-
-        if showDiff, let olderContent {
-            textView.textStorage?.setAttributedString(Self.attributedDiff(from: olderContent, to: selected.content))
+        if modeControl.selectedSegment == 0 {
+            // Diff against the previous version ("what changed in this save").
+            // When there's no previous (oldest version), diff the content against
+            // itself so every line still gets a prefix and the view doesn't shift left.
+            let base = (try? store.previousContent(before: selected.id)) ?? selected.content
+            textView.textStorage?.setAttributedString(Self.attributedDiff(from: base, to: selected.content))
         } else {
             textView.textStorage?.setAttributedString(NSAttributedString(
                 string: selected.content,
