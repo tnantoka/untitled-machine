@@ -28,6 +28,12 @@ final class WatchSession {
 
     private init() {}
 
+    /// Timestamp of the most recent snapshot, for the status menu's info header.
+    var latestSnapshotDate: Date? {
+        guard let store else { return nil }
+        return (try? store.latest())?.createdAt
+    }
+
     /// Resumes watching the file chosen in a previous launch, if any.
     func resume() {
         guard let path = UserDefaults.standard.string(forKey: Self.watchedFilePathKey), !path.isEmpty else { return }

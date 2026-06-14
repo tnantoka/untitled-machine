@@ -1,0 +1,83 @@
+//
+//  MainWindowController.swift
+//  UntitledMachine
+//
+//  Owns the window, its toolbar (search), and switches the content between the
+//  empty state (no file chosen) and the history browser.
+//
+
+import Cocoa
+
+final class MainWindowController: NSWindowController, NSToolbarDelegate {
+
+    private let historyVC = HistorySplitViewController()
+    private let emptyVC = EmptyStateViewController()
+
+    private lazy var toolbar: NSToolbar = {
+        let t = NSToolbar(identifier: "main")
+        t.delegate = self
+        t.displayMode = .iconOnly
+        return t
+    }()
+
+    convenience init() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 860, height: 540),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Untitled Machine"
+        window.isReleasedWhenClosed = false
+        window.center()
+        self.init(window: window)
+
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(targetChanged), name: .watchTargetChanged, object: nil)
+        updateContent()
+    }
+
+    @objc private func targetChanged() {
+        updateContent()
+    }
+
+    private func updateContent() {
+        guard let window else { return }
+        let fileURL = WatchSession.shared.fileURL
+        let watching = fileURL != nil
+        window.toolbar = watching ? toolbar : nil
+        // Home-relative (~/…) reads more naturally than an absolute path.
+        window.subtitle = fileURL.map { ($0.path as NSString).abbreviatingWithTildeInPath } ?? ""
+        window.contentViewController = watching ? historyVC : emptyVC
+        window.setContentSize(NSSize(width: 860, height: 540))
+    }
+
+    // MARK: - Toolbar (search)
+
+    func toolbar(_ toolbar: NSToolbar,
+                 itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        guard itemIdentifier == .searchItem else { return nil }
+        let item = NSSearchToolbarItem(itemIdentifier: .searchItem)
+        item.searchField.placeholderString = "Search all history"
+        item.searchField.target = self
+        item.searchField.action = #selector(searchChanged(_:))
+        return item
+    }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.flexibleSpace, .searchItem]
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.flexibleSpace, .searchItem]
+    }
+
+    @objc private func searchChanged(_ sender: NSSearchField) {
+        historyVC.setSearchQuery(sender.stringValue)
+    }
+}
+
+extension NSToolbarItem.Identifier {
+    static let searchItem = NSToolbarItem.Identifier("search")
+}

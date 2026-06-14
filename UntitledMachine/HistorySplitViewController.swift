@@ -1,22 +1,21 @@
 //
-//  ViewController.swift
+//  HistorySplitViewController.swift
 //  UntitledMachine
 //
-//  A view onto WatchSession.shared. It owns no watching state; it queries the
-//  session's store and refreshes when notified of new snapshots.
+//  The history browser: a native split with a content-list column (versions)
+//  and a detail pane (diff / full text). It holds the browsing logic and acts
+//  as the table's data source/delegate; the two child view controllers are thin
+//  hosts for the views.
 //
 
 import Cocoa
 
-final class ViewController: NSViewController {
+final class HistorySplitViewController: NSSplitViewController, NSTableViewDataSource, NSTableViewDelegate {
 
     private var metas: [SnapshotMeta] = []
     private var query = ""
     private var searchTask: Task<Void, Never>?
 
-    private let pathLabel = NSTextField(labelWithString: "No file selected")
-    private let searchField = NSSearchField()
-    private let launchAtLoginCheckbox = NSButton(checkboxWithTitle: "Launch at login", target: nil, action: nil)
     private let tableView = NSTableView()
     private let textScroll = NSTextView.scrollableTextView()
     private let restoreButton = NSButton(title: "Restore This Version", target: nil, action: nil)
@@ -29,44 +28,47 @@ final class ViewController: NSViewController {
     }()
 
     private static let monoFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-
     private var textView: NSTextView? { textScroll.documentView as? NSTextView }
     private var store: HistoryStore? { WatchSession.shared.store }
 
-    // MARK: - Layout
+    // MARK: - Setup
 
-    override func loadView() {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 820, height: 520))
+    override func viewDidLoad() {
+        super.viewDidLoad()
 
-        let chooseButton = NSButton(title: "Choose File…", target: self, action: #selector(chooseFile))
-        pathLabel.lineBreakMode = .byTruncatingMiddle
-        pathLabel.textColor = .secondaryLabelColor
-        pathLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        searchField.target = self
-        searchField.action = #selector(filterChanged)
-        searchField.placeholderString = "Search all history"
-        searchField.setContentHuggingPriority(.required, for: .horizontal)
-        searchField.widthAnchor.constraint(equalToConstant: 240).isActive = true
-        launchAtLoginCheckbox.target = self
-        launchAtLoginCheckbox.action = #selector(toggleLaunchAtLogin)
-        let topBar = NSStackView(views: [chooseButton, pathLabel, searchField, launchAtLoginCheckbox])
-        topBar.orientation = .horizontal
-        topBar.spacing = 8
-        topBar.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
-        topBar.translatesAutoresizingMaskIntoConstraints = false
+        let listItem = NSSplitViewItem(contentListWithViewController: makeListViewController())
+        listItem.minimumThickness = 220
+        listItem.maximumThickness = 360
+        addSplitViewItem(listItem)
+        addSplitViewItem(NSSplitViewItem(viewController: makeDetailViewController()))
 
-        let listScroll = NSScrollView()
-        listScroll.hasVerticalScroller = true
-        listScroll.documentView = tableView
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(reload), name: .snapshotAdded, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(reload), name: .watchTargetChanged, object: nil)
+
+        refresh(debounce: false)
+    }
+
+    private func makeListViewController() -> NSViewController {
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.documentView = tableView
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("version"))
         column.resizingMask = .autoresizingMask
         tableView.addTableColumn(column)
         tableView.headerView = nil
         tableView.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        tableView.style = .inset
         tableView.dataSource = self
         tableView.delegate = self
-        tableView.style = .inset
 
+        let vc = NSViewController()
+        vc.view = scroll
+        return vc
+    }
+
+    private func makeDetailViewController() -> NSViewController {
         if let textView {
             textView.isEditable = false
             textView.isRichText = true
@@ -74,111 +76,55 @@ final class ViewController: NSViewController {
             textView.textContainerInset = NSSize(width: 8, height: 8)
         }
 
-        let split = NSSplitView()
-        split.isVertical = true
-        split.dividerStyle = .thin
-        split.translatesAutoresizingMaskIntoConstraints = false
-        split.addArrangedSubview(listScroll)
-        split.addArrangedSubview(textScroll)
-        split.setHoldingPriority(.defaultHigh, forSubviewAt: 0)
-
         restoreButton.target = self
         restoreButton.action = #selector(restoreSelected)
         restoreButton.isEnabled = false
         modeControl.target = self
         modeControl.action = #selector(modeChanged)
         modeControl.selectedSegment = 0
-        let bottomSpacer = NSView()
-        bottomSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let bottomBar = NSStackView(views: [modeControl, bottomSpacer, restoreButton])
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let bottomBar = NSStackView(views: [modeControl, spacer, restoreButton])
         bottomBar.orientation = .horizontal
         bottomBar.spacing = 8
         bottomBar.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
         bottomBar.translatesAutoresizingMaskIntoConstraints = false
+        textScroll.translatesAutoresizingMaskIntoConstraints = false
 
-        root.addSubview(topBar)
-        root.addSubview(split)
-        root.addSubview(bottomBar)
-
-        let preferredListWidth = listScroll.widthAnchor.constraint(equalToConstant: 280)
-        preferredListWidth.priority = .defaultLow
+        let container = NSView()
+        container.addSubview(textScroll)
+        container.addSubview(bottomBar)
         NSLayoutConstraint.activate([
-            topBar.topAnchor.constraint(equalTo: root.topAnchor),
-            topBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            topBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-
-            split.topAnchor.constraint(equalTo: topBar.bottomAnchor),
-            split.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            split.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-
-            bottomBar.topAnchor.constraint(equalTo: split.bottomAnchor),
-            bottomBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            bottomBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            bottomBar.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-
-            listScroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 200),
-            preferredListWidth,
+            textScroll.topAnchor.constraint(equalTo: container.topAnchor),
+            textScroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            textScroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            bottomBar.topAnchor.constraint(equalTo: textScroll.bottomAnchor),
+            bottomBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            bottomBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            bottomBar.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
 
-        self.view = root
+        let vc = NSViewController()
+        vc.view = container
+        return vc
     }
 
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(snapshotDidArrive), name: .snapshotAdded, object: nil)
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(watchTargetDidChange), name: .watchTargetChanged, object: nil)
-    }
+    // MARK: - Search (driven by the toolbar)
 
-    override func viewWillAppear() {
-        super.viewWillAppear()
-        reflectTarget()
-        syncLoginCheckbox()
-        refresh(debounce: false)
-    }
-
-    // MARK: - Notifications
-
-    @objc private func snapshotDidArrive() { refresh(debounce: false) }
-
-    @objc private func watchTargetDidChange() {
-        reflectTarget()
-        refresh(debounce: false)
+    func setSearchQuery(_ text: String) {
+        query = text
+        refresh(debounce: true)
     }
 
     // MARK: - Actions
-
-    @objc private func chooseFile() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.message = "Choose the text file to keep history for."
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try WatchSession.shared.watch(url)
-        } catch {
-            presentError("Could not open history", error)
-        }
-    }
 
     @objc private func modeChanged() {
         updateDetail()
     }
 
-    @objc private func filterChanged() {
-        query = searchField.stringValue
-        refresh(debounce: true)
-    }
-
-    @objc private func toggleLaunchAtLogin() {
-        do {
-            try LoginItem.setEnabled(launchAtLoginCheckbox.state == .on)
-        } catch {
-            presentError("Could not change the login item", error)
-        }
-        syncLoginCheckbox() // reflect the real status, even if the change failed
+    @objc private func reload() {
+        refresh(debounce: false)
     }
 
     @objc private func restoreSelected() {
@@ -191,19 +137,8 @@ final class ViewController: NSViewController {
         }
     }
 
-    // MARK: - State reflection
+    // MARK: - Data
 
-    private func reflectTarget() {
-        pathLabel.stringValue = WatchSession.shared.fileURL?.path ?? "No file selected"
-    }
-
-    private func syncLoginCheckbox() {
-        launchAtLoginCheckbox.state = LoginItem.isEnabled ? .on : .off
-    }
-
-    // Reloads the version list. The query runs off the main thread so a heavy
-    // search (e.g. a short query that falls back to a full LIKE scan over a large
-    // history) never freezes the UI. `debounce` waits out rapid typing first.
     private func refresh(debounce: Bool) {
         guard let store else {
             metas = []
@@ -260,7 +195,6 @@ final class ViewController: NSViewController {
         highlightQuery(in: textView)
     }
 
-    // Highlights occurrences of the current search text in the detail pane.
     private func highlightQuery(in textView: NSTextView) {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let storage = textView.textStorage else { return }
@@ -300,11 +234,8 @@ final class ViewController: NSViewController {
         alert.alertStyle = .warning
         alert.runModal()
     }
-}
 
-// MARK: - Table data source / delegate
-
-extension ViewController: NSTableViewDataSource, NSTableViewDelegate {
+    // MARK: - Table data source / delegate
 
     func numberOfRows(in tableView: NSTableView) -> Int {
         metas.count
