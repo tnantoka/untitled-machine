@@ -41,8 +41,13 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     // Show in the Dock (and the menu bar) only while the window is open, like
     // Docker Desktop: ⌘Tab works when the window is up, then back to menu-bar-only.
     override func showWindow(_ sender: Any?) {
+        // Coming back from .accessory (window was closed): switch to .regular and
+        // activate BEFORE ordering the window front, or it can come up unfocused
+        // or not appear at all.
         NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
         super.showWindow(sender)
+        window?.makeKeyAndOrderFront(sender)
     }
 
     func windowWillClose(_ notification: Notification) {

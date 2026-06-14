@@ -10,10 +10,20 @@ import Cocoa
 class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var statusItem: NSStatusItem?
+    private var statusMenu: NSMenu?
     private var loginMenuItem: NSMenuItem?
+    private var openOnClickMenuItem: NSMenuItem?
     private var watchingMenuItem: NSMenuItem?
     private var latestMenuItem: NSMenuItem?
     private let windowController = MainWindowController()
+
+    // When on, a plain click opens History directly; otherwise a click shows the
+    // menu (the standard behavior). Either way, right/⌃-click shows the menu.
+    private static let openOnClickKey = "openHistoryOnClick"
+    private var openHistoryOnClick: Bool {
+        get { UserDefaults.standard.bool(forKey: Self.openOnClickKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.openOnClickKey) }
+    }
 
     private static let menuDateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -61,17 +71,46 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(withTitle: "Open History", action: #selector(openHistory(_:)), keyEquivalent: "")
         menu.addItem(withTitle: "Choose File to Watch…", action: #selector(chooseFile), keyEquivalent: "")
+        menu.addItem(.separator())
+
+        // Preferences group.
+        let openOnClick = NSMenuItem(title: "Open History on Menu Bar Click", action: #selector(toggleOpenOnClick), keyEquivalent: "")
+        menu.addItem(openOnClick)
+        openOnClickMenuItem = openOnClick
         let login = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         menu.addItem(login)
         loginMenuItem = login
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Untitled Machine", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        item.menu = menu
+        statusMenu = menu
+
+        // Left-click opens History (the most-used action); right-click / ⌃-click
+        // shows the menu. So we don't assign `item.menu` permanently.
+        item.button?.target = self
+        item.button?.action = #selector(statusItemClicked)
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         statusItem = item
+    }
+
+    @objc private func statusItemClicked() {
+        let event = NSApp.currentEvent
+        let isSecondary = event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true
+        if !isSecondary && openHistoryOnClick {
+            openHistory(nil)
+        } else if let menu = statusMenu, let item = statusItem {
+            item.menu = menu                 // assign just for this pop-up…
+            item.button?.performClick(nil)
+            item.menu = nil                  // …then clear so the click action stays
+        }
+    }
+
+    @objc private func toggleOpenOnClick() {
+        openHistoryOnClick.toggle()
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         loginMenuItem?.state = LoginItem.isEnabled ? .on : .off
+        openOnClickMenuItem?.state = openHistoryOnClick ? .on : .off
 
         if let url = WatchSession.shared.fileURL {
             watchingMenuItem?.title = "Watching “\(url.lastPathComponent)”"
@@ -88,8 +127,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openHistory(_ sender: Any?) {
-        windowController.showWindow(sender) // promotes to .regular (Dock + menu bar)
-        NSApp.activate(ignoringOtherApps: true)
+        windowController.showWindow(sender) // promotes to .regular, activates, shows
     }
 
     @objc private func chooseFile() {
