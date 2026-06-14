@@ -8,7 +8,7 @@
 
 import Cocoa
 
-final class MainWindowController: NSWindowController, NSToolbarDelegate {
+final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindowDelegate {
 
     private let historyVC = HistorySplitViewController()
     private let emptyVC = EmptyStateViewController()
@@ -31,10 +31,22 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
         window.isReleasedWhenClosed = false
         window.center()
         self.init(window: window)
+        window.delegate = self
 
         NotificationCenter.default.addObserver(
             self, selector: #selector(targetChanged), name: .watchTargetChanged, object: nil)
         updateContent()
+    }
+
+    // Show in the Dock (and the menu bar) only while the window is open, like
+    // Docker Desktop: ⌘Tab works when the window is up, then back to menu-bar-only.
+    override func showWindow(_ sender: Any?) {
+        NSApp.setActivationPolicy(.regular)
+        super.showWindow(sender)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
     }
 
     @objc private func targetChanged() {

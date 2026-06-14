@@ -88,8 +88,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openHistory(_ sender: Any?) {
+        windowController.showWindow(sender) // promotes to .regular (Dock + menu bar)
         NSApp.activate(ignoringOtherApps: true)
-        windowController.showWindow(sender)
     }
 
     @objc private func chooseFile() {
