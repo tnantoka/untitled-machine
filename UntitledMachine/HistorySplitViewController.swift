@@ -25,7 +25,23 @@ final class HistorySplitViewController: NSSplitViewController, NSTableViewDataSo
     private var searchTask: Task<Void, Never>?
 
     private let tableView = VersionTableView()
-    private let textScroll = NSTextView.scrollableTextView()
+    private let detailTextView = CopyFilteringTextView(frame: .zero)
+    private lazy var textScroll: NSScrollView = {
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        detailTextView.isEditable = false
+        detailTextView.isRichText = true
+        detailTextView.font = Self.monoFont
+        detailTextView.textContainerInset = NSSize(width: 8, height: 8)
+        detailTextView.isVerticallyResizable = true
+        detailTextView.isHorizontallyResizable = false
+        detailTextView.autoresizingMask = [.width]
+        detailTextView.minSize = NSSize(width: 0, height: 0)
+        detailTextView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        detailTextView.textContainer?.widthTracksTextView = true
+        scroll.documentView = detailTextView
+        return scroll
+    }()
     private let restoreButton = NSButton(title: "Restore This Version", target: nil, action: nil)
     private let removeButton = NSButton()
     private let modeControl = NSSegmentedControl(labels: ["Diff", "Full"], trackingMode: .selectOne, target: nil, action: nil)
@@ -51,7 +67,7 @@ final class HistorySplitViewController: NSSplitViewController, NSTableViewDataSo
         return f
     }()
 
-    private var textView: NSTextView? { textScroll.documentView as? NSTextView }
+    private var textView: NSTextView? { detailTextView }
     private var store: HistoryStore? { WatchSession.shared.store }
 
     // MARK: - Setup
@@ -127,13 +143,6 @@ final class HistorySplitViewController: NSSplitViewController, NSTableViewDataSo
     }
 
     private func makeDetailViewController() -> NSViewController {
-        if let textView {
-            textView.isEditable = false
-            textView.isRichText = true
-            textView.font = Self.monoFont
-            textView.textContainerInset = NSSize(width: 8, height: 8)
-        }
-
         restoreButton.target = self
         restoreButton.action = #selector(restoreSelected)
         restoreButton.isEnabled = false
@@ -333,10 +342,7 @@ final class HistorySplitViewController: NSSplitViewController, NSTableViewDataSo
             let base = (try? store.previousContent(before: selected.id)) ?? selected.content
             textView.textStorage?.setAttributedString(Self.attributedDiff(from: base, to: selected.content))
         } else {
-            textView.textStorage?.setAttributedString(NSAttributedString(
-                string: selected.content,
-                attributes: [.font: Self.monoFont, .foregroundColor: NSColor.labelColor]
-            ))
+            textView.textStorage?.setAttributedString(Self.attributedContent(selected.content))
         }
         highlightQuery(in: textView)
     }
@@ -355,22 +361,70 @@ final class HistorySplitViewController: NSSplitViewController, NSTableViewDataSo
         }
     }
 
-    private static func attributedDiff(from old: String, to new: String) -> NSAttributedString {
+    // A line-number / diff-marker gutter that's shown but excluded from copy (see
+    // CopyFilteringTextView). The line number is the one in the version being
+    // viewed (the "new" side); deleted lines have no number there.
+    private static func gutter(_ text: String, color: NSColor = .tertiaryLabelColor) -> NSAttributedString {
+        NSAttributedString(string: text, attributes: [
+            .font: monoFont, .foregroundColor: color, .umNonCopyable: true,
+        ])
+    }
+
+    private static func attributedContent(_ content: String) -> NSAttributedString {
+        let lines = splitLines(content)
+        let width = max(3, String(lines.count).count)
         let result = NSMutableAttributedString()
-        for line in TextDiff.diff(from: old, to: new) {
-            let prefix: String
-            let color: NSColor
-            switch line.kind {
-            case .equal:    prefix = "  "; color = .labelColor
-            case .inserted: prefix = "+ "; color = .systemGreen
-            case .deleted:  prefix = "- "; color = .systemRed
-            }
-            result.append(NSAttributedString(
-                string: prefix + line.text + "\n",
-                attributes: [.font: monoFont, .foregroundColor: color]
-            ))
+        for (i, text) in lines.enumerated() {
+            result.append(gutter(String(format: "%\(width)d │ ", i + 1)))
+            result.append(NSAttributedString(string: text + "\n",
+                                             attributes: [.font: monoFont, .foregroundColor: NSColor.labelColor]))
         }
         return result
+    }
+
+    private static func attributedDiff(from old: String, to new: String) -> NSAttributedString {
+        let lines = TextDiff.diff(from: old, to: new)
+        // Two columns, git style: each line is numbered on the side it exists on.
+        let oldCount = lines.reduce(0) { $0 + ($1.kind == .inserted ? 0 : 1) } // equal + deleted
+        let newCount = lines.reduce(0) { $0 + ($1.kind == .deleted ? 0 : 1) }   // equal + inserted
+        let oldWidth = max(2, String(oldCount).count)
+        let newWidth = max(2, String(newCount).count)
+
+        let result = NSMutableAttributedString()
+        var oldNumber = 0
+        var newNumber = 0
+        for line in lines {
+            let marker: String
+            let color: NSColor
+            let oldNum: Int?
+            let newNum: Int?
+            switch line.kind {
+            case .equal:    marker = " "; color = .labelColor; oldNumber += 1; newNumber += 1; oldNum = oldNumber; newNum = newNumber
+            case .inserted: marker = "+"; color = .systemGreen; newNumber += 1; oldNum = nil; newNum = newNumber
+            case .deleted:  marker = "-"; color = .systemRed; oldNumber += 1; oldNum = oldNumber; newNum = nil
+            }
+            let oldText = oldNum.map { String(format: "%\(oldWidth)d", $0) } ?? String(repeating: " ", count: oldWidth)
+            let newText = newNum.map { String(format: "%\(newWidth)d", $0) } ?? String(repeating: " ", count: newWidth)
+            // Color the changed line's number to match its row; keep unchanged
+            // lines' numbers and the separator neutral.
+            result.append(gutter(oldText, color: line.kind == .deleted ? .systemRed : .tertiaryLabelColor))
+            result.append(gutter(" "))
+            result.append(gutter(newText, color: line.kind == .inserted ? .systemGreen : .tertiaryLabelColor))
+            result.append(gutter(" │ "))
+            // Marker is shown (and colored) but excluded from copy.
+            result.append(NSAttributedString(string: marker + " ",
+                                             attributes: [.font: monoFont, .foregroundColor: color, .umNonCopyable: true]))
+            result.append(NSAttributedString(string: line.text + "\n",
+                                             attributes: [.font: monoFont, .foregroundColor: color]))
+        }
+        return result
+    }
+
+    private static func splitLines(_ text: String) -> [String] {
+        if text.isEmpty { return [] }
+        var lines = text.components(separatedBy: .newlines)
+        if lines.last == "" { lines.removeLast() }
+        return lines
     }
 
     private static func makeDiffPreview(from old: String, to new: String) -> NSView {
@@ -450,6 +504,31 @@ final class HistorySplitViewController: NSSplitViewController, NSTableViewDataSo
         ])
         cell.identifier = id
         return cell
+    }
+}
+
+extension NSAttributedString.Key {
+    // Marks gutter/marker runs that are displayed but must not be copied.
+    static let umNonCopyable = NSAttributedString.Key("UMNonCopyable")
+}
+
+// Read-only text view whose copy/drag output omits the gutter (line numbers and
+// diff markers), so users can copy clean text out of a numbered/diffed view.
+private final class CopyFilteringTextView: NSTextView {
+    override func writeSelection(to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool {
+        guard let storage = textStorage else {
+            return super.writeSelection(to: pboard, types: types)
+        }
+        let full = storage.string as NSString
+        let copied = NSMutableString()
+        for value in selectedRanges {
+            storage.enumerateAttribute(.umNonCopyable, in: value.rangeValue) { marker, subRange, _ in
+                if marker == nil { copied.append(full.substring(with: subRange)) }
+            }
+        }
+        pboard.declareTypes([.string], owner: nil)
+        pboard.setString(copied as String, forType: .string)
+        return true
     }
 }
 
