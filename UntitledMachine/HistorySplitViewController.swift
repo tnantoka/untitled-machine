@@ -100,13 +100,14 @@ final class HistorySplitViewController: NSSplitViewController, NSTableViewDataSo
         tableView.headerView = nil
         tableView.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         tableView.style = .inset
+        tableView.allowsMultipleSelection = true
         tableView.dataSource = self
         tableView.delegate = self
         tableView.onDeleteKey = { [weak self] in self?.deleteSelected() }
 
-        // Right-click → Delete (the standard, discoverable way to delete a row).
+        // Right-click → Delete (acts on the whole selection).
         let contextMenu = NSMenu()
-        contextMenu.addItem(withTitle: "Delete Version", action: #selector(deleteFromContextMenu), keyEquivalent: "")
+        contextMenu.addItem(withTitle: "Delete", action: #selector(deleteFromContextMenu), keyEquivalent: "")
         tableView.menu = contextMenu
 
         removeButton.image = NSImage(systemSymbolName: "trash", accessibilityDescription: "Delete version")
@@ -196,8 +197,10 @@ final class HistorySplitViewController: NSSplitViewController, NSTableViewDataSo
     }
 
     @objc private func restoreSelected() {
-        guard let store, let meta = selectedMeta(),
-              let selected = try? store.snapshot(id: meta.id) else { return }
+        let metas = selectedMetas()
+        guard metas.count == 1, let store else { return } // restore is single-version only
+        let meta = metas[0]
+        guard let selected = try? store.snapshot(id: meta.id) else { return }
         let current = (try? store.latest())?.content ?? ""
 
         let alert = NSAlert()
@@ -218,19 +221,28 @@ final class HistorySplitViewController: NSSplitViewController, NSTableViewDataSo
     }
 
     @objc private func deleteFromContextMenu() {
+        // Right-click a row that isn't part of the selection → act on just it.
         let row = tableView.clickedRow
-        if row >= 0, row < rows.count, case .version = rows[row] {
+        if row >= 0, row < rows.count, case .version = rows[row], !tableView.selectedRowIndexes.contains(row) {
             tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         }
         deleteSelected()
     }
 
     @objc private func deleteSelected() {
-        guard let store, let meta = selectedMeta() else { return }
+        guard let store else { return }
+        let metas = selectedMetas()
+        guard !metas.isEmpty else { return }
+
         let alert = NSAlert()
-        alert.messageText = "Delete this version?"
-        alert.informativeText = "This permanently removes the version from "
-            + "\(dialogDateFormatter.string(from: meta.createdAt)). This can't be undone."
+        if metas.count == 1 {
+            alert.messageText = "Delete this version?"
+            alert.informativeText = "This permanently removes the version from "
+                + "\(dialogDateFormatter.string(from: metas[0].createdAt)). This can't be undone."
+        } else {
+            alert.messageText = "Delete \(metas.count) versions?"
+            alert.informativeText = "This permanently removes the \(metas.count) selected versions. This can't be undone."
+        }
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
@@ -238,7 +250,7 @@ final class HistorySplitViewController: NSSplitViewController, NSTableViewDataSo
 
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
-            try store.deleteSnapshot(id: meta.id)
+            try store.deleteSnapshots(ids: metas.map(\.id))
             refresh(debounce: false)
         } catch {
             presentError("Delete failed", error)
@@ -312,24 +324,33 @@ final class HistorySplitViewController: NSSplitViewController, NSTableViewDataSo
         return "\(sign)\(size)"
     }
 
-    private func selectedMeta() -> SnapshotMeta? {
-        let row = tableView.selectedRow
-        guard row >= 0, row < rows.count, case let .version(meta, _) = rows[row] else { return nil }
-        return meta
+    private func selectedMetas() -> [SnapshotMeta] {
+        tableView.selectedRowIndexes.compactMap { row in
+            guard case let .version(meta, _) = rows[row] else { return nil }
+            return meta
+        }
     }
 
     // MARK: - Detail (diff / full text)
 
     private func updateDetail() {
         guard let textView else { return }
-        guard let store, let meta = selectedMeta(),
-              let selected = try? store.snapshot(id: meta.id) else {
-            textView.string = ""
+        let metas = selectedMetas()
+        removeButton.isEnabled = !metas.isEmpty // any selection can be deleted
+
+        // Diff / restore only make sense for a single version.
+        guard metas.count == 1, let store, let selected = try? store.snapshot(id: metas[0].id) else {
             restoreButton.isEnabled = false
-            removeButton.isEnabled = false
+            if metas.count > 1 {
+                textView.textStorage?.setAttributedString(NSAttributedString(
+                    string: "\(metas.count) versions selected",
+                    attributes: [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.secondaryLabelColor]
+                ))
+            } else {
+                textView.string = ""
+            }
             return
         }
-        removeButton.isEnabled = true // any version can be deleted
         // Restore is a no-op when the selected version already equals the current
         // state (the newest snapshot), so disable it then.
         let current = (try? store.latest())?.content

@@ -99,6 +99,25 @@ nonisolated final class HistoryStore: @unchecked Sendable {
         guard sqlite3_step(stmt) == SQLITE_DONE else { throw lastError() }
     }
 
+    /// Deletes many versions in one transaction (all-or-nothing).
+    func deleteSnapshots(ids: [Int64]) throws {
+        guard !ids.isEmpty else { return }
+        try exec("BEGIN;")
+        do {
+            let stmt = try prepare("DELETE FROM snapshots WHERE rowid = ?;")
+            defer { sqlite3_finalize(stmt) }
+            for id in ids {
+                sqlite3_reset(stmt)
+                sqlite3_bind_int64(stmt, 1, id)
+                guard sqlite3_step(stmt) == SQLITE_DONE else { throw lastError() }
+            }
+            try exec("COMMIT;")
+        } catch {
+            try? exec("ROLLBACK;")
+            throw error
+        }
+    }
+
     // MARK: - Reading
 
     func snapshotMetas() throws -> [SnapshotMeta] {

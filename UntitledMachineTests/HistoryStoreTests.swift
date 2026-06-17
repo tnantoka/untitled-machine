@@ -101,6 +101,19 @@ struct HistoryStoreTests {
         #expect(try store.content(id: v1.id) == "keep")
     }
 
+    @Test func deleteSnapshots_removesAllGivenIds() throws {
+        let store = try makeStore()
+        let v1 = try #require(try store.appendSnapshot(content: "a", createdAt: Date()))
+        let v2 = try #require(try store.appendSnapshot(content: "b", createdAt: Date()))
+        let v3 = try #require(try store.appendSnapshot(content: "c", createdAt: Date()))
+
+        try store.deleteSnapshots(ids: [v1.id, v3.id])
+        #expect(try store.count() == 1)
+        #expect(try store.content(id: v2.id) == "b")
+        #expect(try store.content(id: v1.id) == nil)
+        #expect(try store.content(id: v3.id) == nil)
+    }
+
     // MARK: - Search (the main feature)
 
     @Test func search_findsContentEvenAfterItWasDeletedInLaterVersion() throws {
