@@ -13,9 +13,13 @@ final class EmptyStateViewController: NSViewController {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 860, height: 540))
 
         let icon = NSImageView()
-        icon.image = NSImage(systemSymbolName: "rectangle.stack", accessibilityDescription: nil)
-        icon.symbolConfiguration = .init(pointSize: 44, weight: .regular)
-        icon.contentTintColor = .secondaryLabelColor
+        icon.image = NSApp.applicationIconImage // the real app icon
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            icon.widthAnchor.constraint(equalToConstant: 96),
+            icon.heightAnchor.constraint(equalToConstant: 96),
+        ])
 
         let title = NSTextField(labelWithString: "Keep the history of one text file")
         title.font = .systemFont(ofSize: 17, weight: .semibold)

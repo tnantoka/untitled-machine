@@ -53,8 +53,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(systemSymbolName: "rectangle.stack",
-                                     accessibilityDescription: "Untitled Machine")
+        let icon = NSImage(named: "MenuBarIcon")
+        icon?.isTemplate = true // recolor to match the menu bar (light/dark)
+        icon?.accessibilityDescription = "Untitled Machine"
+        item.button?.image = icon
         let menu = NSMenu()
         menu.delegate = self
 
