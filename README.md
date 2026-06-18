@@ -3,7 +3,7 @@
 A version-history companion for your One Big Text File (OBTF).
 Not an editor — bring your own.
 
-![](docs/screenshot.png)
+![](docs/screenshot-noshadow.png)
 
 It watches one text file and saves a snapshot whenever it changes, so you can browse, diff, search, and restore any past version. The goal isn't to never lose anything; it's to let you delete freely, knowing you can get it back.
 
