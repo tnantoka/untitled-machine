@@ -5,7 +5,7 @@ Not an editor — bring your own.
 
 ![](docs/screenshot.png)
 
-It watches one text file and saves a snapshot whenever it changes, so you can browse, diff, search, and restore any past version. The goal isn't to never lose anything; it's to let you delete freely, knowing you can get it back.
+It watches one text file — that ever-growing `Untitled.txt` you pour everything into — and saves a snapshot whenever it changes, so you can browse, diff, search, and restore any past version. The goal isn't to never lose anything; it's to let you delete freely, knowing you can get it back.
 
 ## How it works
 
