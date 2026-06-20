@@ -25,7 +25,7 @@ It runs in the menu bar. Open the history window from the menu bar icon; close i
 
 ## Requirements
 
-macOS 15.7+.
+macOS 13+.
 
 ## Build
 
